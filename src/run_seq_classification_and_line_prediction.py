@@ -38,6 +38,8 @@ from reindent import run as run_reindent
 import io
 import pdb
 import scipy
+import wandb
+
 
 logger = logging.getLogger(__name__)
 

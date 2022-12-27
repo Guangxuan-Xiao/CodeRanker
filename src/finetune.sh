@@ -1,5 +1,6 @@
 #!/bin/bash -x
 MODEL=microsoft/codebert-base
+export WANDB_PROJECT=CodeRanker
 
 if [ "$#" -eq 2 ]; then
     DATASET=$1
@@ -58,7 +59,8 @@ if [ $TASK != "execution_error_with_line" ]; then
         --metric_for_best_model top1_accuracy \
         --logging_first_step \
         --eval_steps 10 \
-        --save_steps 10
+        --save_steps 10 \
+        --save_total_limit 1
 
 else
     LABELS_SUFFIX=labels_execution_error.txt
@@ -96,6 +98,7 @@ else
         --logging_first_step \
         --eval_steps 10 \
         --save_steps 10 \
+        --save_total_limit 1 \
         --overwrite_output_dir \
 
 fi
