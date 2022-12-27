@@ -12,7 +12,7 @@ from transformers.trainer_utils import get_last_checkpoint
 from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score, roc_auc_score
 from transformers import EvalPrediction, WEIGHTS_NAME
 import torch
-import torch.nn as nn
+import torch.nn as nn 
 
 import argparse
 import os
@@ -28,10 +28,10 @@ from reindent import run as run_reindent
 import io
 import pdb
 import scipy
-import wandb
+
+from generate_partial import create_extended_dataset, create_grouped_indices
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass
 class DataTrainingArguments:
@@ -41,7 +41,13 @@ class DataTrainingArguments:
     into argparse arguments to be able to specify them on
     the command line.
     """
-
+    num_partials: int = field(
+        default=3,
+        metadata={
+            "help": "The number of partials each code will generate. 3 means we take 0.25, 0.50, and 0.75"
+            "of each code snippet, and the dataset will quadruple in size."
+        },
+    ) 
     max_seq_length: int = field(
         default=128,
         metadata={
@@ -93,35 +99,29 @@ class DataTrainingArguments:
     validation_file: Optional[str] = field(
         default=None, metadata={"help": "A csv or a json file containing the validation data."}
     )
-    test_file: Optional[str] = field(default=None, metadata={
-                                     "help": "A csv or a json file containing the test data."})
-    labels_file: Optional[str] = field(
-        default=None, metadata={"help": "A txt file containing the labels."})
-    weights_file: Optional[str] = field(
-        default=None, metadata={"help": "A txt file containing the weights."})
-    grouped_indices_file: Optional[str] = field(
-        default=None, metadata={"help": "A txt file containing the grouped indices."})
-    grouped_labels_file: Optional[str] = field(
-        default=None, metadata={"help": "A txt file containing the grouped labels."})
-    predict_suffix: Optional[str] = field(
-        default="", metadata={"help": "Suffix for predict file."})
+    test_file: Optional[str] = field(default=None, metadata={"help": "A csv or a json file containing the test data."})
+    labels_file: Optional[str] = field(default=None, metadata={"help": "A txt file containing the labels."})
+    weights_file: Optional[str] = field(default=None, metadata={"help": "A txt file containing the weights."})
+    grouped_indices_file: Optional[str] = field(default=None, metadata={"help": "A txt file containing the grouped indices."})
+    grouped_labels_file: Optional[str] = field(default=None, metadata={"help": "A txt file containing the grouped labels."})
+    predict_suffix: Optional[str] = field(default="", metadata={"help": "Suffix for predict file."})
     sentence1_key: Optional[str] = field(
         default="prompt",
-        metadata={"help": "Name of the key for sentence1 in the dataset"},
+        metadata={"help": "Name of the key for sentence1 in the dataset" },
     )
     sentence2_key: Optional[str] = field(
         default="completion",
-        metadata={"help": "Name of the key for sentence2 in the dataset"},
+        metadata={"help": "Name of the key for sentence2 in the dataset" },
     )
     label_key: Optional[str] = field(
         default="binary_label",
-        metadata={"help": "Name of the key for label in the dataset"},
+        metadata={"help": "Name of the key for label in the dataset" },
     )
 
     def __post_init__(self):
         if (self.train_file is None and self.validation_file is None) and self.test_file is None:
-            raise ValueError(
-                "Need either a GLUE task, a training/validation file or a dataset name.")
+            raise ValueError("Need either a GLUE task, a training/validation file or a dataset name.")
+        
 
 
 @dataclass
@@ -131,8 +131,7 @@ class ModelArguments:
     """
 
     model_name_or_path: str = field(
-        metadata={
-            "help": "Path to pretrained model or model identifier from huggingface.co/models"}
+        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
     config_name: Optional[str] = field(
         default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
@@ -142,18 +141,15 @@ class ModelArguments:
     )
     cache_dir: Optional[str] = field(
         default=None,
-        metadata={
-            "help": "Where do you want to store the pretrained models downloaded from huggingface.co"},
+        metadata={"help": "Where do you want to store the pretrained models downloaded from huggingface.co"},
     )
     use_fast_tokenizer: bool = field(
         default=True,
-        metadata={
-            "help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."},
+        metadata={"help": "Whether to use one of the fast tokenizer (backed by the tokenizers library) or not."},
     )
     model_revision: str = field(
         default="main",
-        metadata={
-            "help": "The specific model version to use (can be a branch name, tag name or commit id)."},
+        metadata={"help": "The specific model version to use (can be a branch name, tag name or commit id)."},
     )
     use_auth_token: bool = field(
         default=False,
@@ -171,33 +167,28 @@ def compute_metrics(p: EvalPrediction, compute_ranker_accuracy=False, grouped_in
     # grouped_labels is the actual ternary labels of <prompt, completion> 
     # datapoints at the indices provided by grouped_indices
 
-    pred_raw, labels = p
+    pred_raw, labels = p    
     if compute_ranker_accuracy:
         # we will also compute the actual accuracy of the ranker
         pred_softmax = scipy.special.softmax(pred_raw, axis=1)
-        # prob of <prompt,completion> is Correct as predicted by the ranker
-        pred_prob = pred_softmax[:, pass_idx]
-        def prob_fun(x): return pred_prob[x] if x >= 0 else 0
+        pred_prob = pred_softmax[:,pass_idx] # prob of <prompt,completion> is Correct as predicted by the ranker
+        prob_fun = lambda x: pred_prob[x] if x >=0 else 0 
         prob_fun = np.vectorize(prob_fun)
-        # group prob predicted by task
-        grouped_prob = prob_fun(grouped_indices)
+        grouped_prob = prob_fun(grouped_indices) # group prob predicted by task
 
         # top-1 accuracy
-        # index of the best completion for each task as predicted by the ranker
-        best = np.argmax(grouped_prob, axis=1)
-        # get the actual label of this best completion
-        top1_label = grouped_labels[np.arange(len(grouped_labels)), best]
+        best = np.argmax(grouped_prob, axis=1) # index of the best completion for each task as predicted by the ranker
+        top1_label = grouped_labels[np.arange(len(grouped_labels)), best] # get the actual label of this best completion
         top1_accuracy = np.mean(top1_label == "Correct")
         top1_execution = 1.0 - np.mean(top1_label == "Execution error")
 
+        
     pred = np.argmax(pred_raw, axis=1)
     pred_binary = pred == pass_idx
     labels_binary = labels == pass_idx
     accuracy = accuracy_score(y_true=labels_binary, y_pred=pred_binary)
-    recall = recall_score(y_true=labels_binary,
-                          y_pred=pred_binary, average='micro')
-    precision = precision_score(
-        y_true=labels_binary, y_pred=pred_binary, average='micro')
+    recall = recall_score(y_true=labels_binary, y_pred=pred_binary, average='micro')
+    precision = precision_score(y_true=labels_binary, y_pred=pred_binary, average='micro')
     f1 = f1_score(y_true=labels_binary, y_pred=pred_binary, average='micro')
 
     # multi class predictions
@@ -213,13 +204,12 @@ def compute_metrics(p: EvalPrediction, compute_ranker_accuracy=False, grouped_in
                'f1_mc': f1_mc,
                'precision_mc': precision_mc,
                'recall_mc': recall_mc,
-               'accuracy_mc': accuracy_mc, }
+               'accuracy_mc': accuracy_mc,}
 
     if compute_ranker_accuracy:
         metrics['top1_accuracy'] = top1_accuracy
         metrics['top1_execution'] = top1_execution
-    return metrics
-
+    return metrics 
 
 def reindent_code(codestr, replace_set=[]):
     """
@@ -230,9 +220,9 @@ def reindent_code(codestr, replace_set=[]):
     ret = io.StringIO()
 
     run_reindent(
-        codestr,
-        ret,
-        config={
+        codestr, 
+        ret, 
+        config = {
             "dry-run": False,
             "help": False,
             "to": 10,
@@ -252,24 +242,18 @@ def reindent_code(codestr, replace_set=[]):
     return out
 
 # A trainer for balancing dataset with class weights
-
-
 class CustomTrainer(Trainer):
     def set_weights(self, class_weights):
         self.class_weights = class_weights
-
     def compute_loss(self, model, inputs, return_outputs=False):
         labels = inputs.get("labels")
         # forward pass
         outputs = model(**inputs)
         logits = outputs.get("logits")
         # compute custom loss (labels with different weights)
-        loss_fct = nn.CrossEntropyLoss(weight=torch.tensor(
-            self.class_weights).to(logits.device))
-        loss = loss_fct(
-            logits.view(-1, self.model.config.num_labels), labels.view(-1))
+        loss_fct = nn.CrossEntropyLoss(weight=torch.tensor(self.class_weights).to(logits.device))
+        loss = loss_fct(logits.view(-1, self.model.config.num_labels), labels.view(-1))
         return (loss, outputs) if return_outputs else loss
-
 
 def main():
     print("Helllllllooooooooooooo")
@@ -277,10 +261,9 @@ def main():
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
-    parser = HfArgumentParser(
-        (ModelArguments, DataTrainingArguments, TrainingArguments))
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-
+   
     # Setup logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -290,8 +273,8 @@ def main():
 
     log_level = training_args.get_process_log_level()
     logger.setLevel(log_level)
-    # datasets.utils.logging.set_verbosity(log_level)
-    # transformers.utils.logging.set_verbosity(log_level)
+    #datasets.utils.logging.set_verbosity(log_level)
+    #transformers.utils.logging.set_verbosity(log_level)
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
 
@@ -316,7 +299,7 @@ def main():
     #
     # In distributed training, the load_dataset function guarantee that only one local process can concurrently
     # download the dataset.
-
+    
     # Loading a dataset from your local files.
     # CSV/JSON training and evaluation files are needed.
     data_files = {}
@@ -327,11 +310,13 @@ def main():
     if training_args.do_predict and data_args.test_file != None:
         data_files["test"] = data_args.test_file
 
+
     for key in data_files.keys():
         logger.info(f"load a local file for {key}: {data_files[key]}")
 
-    raw_datasets = load_dataset(
-        "json", data_files=data_files, cache_dir=model_args.cache_dir)
+    raw_datasets = load_dataset("json", data_files=data_files, cache_dir=model_args.cache_dir)
+    print("Creating extended dataset")
+    raw_datasets = create_extended_dataset(raw_datasets, n=data_args.num_partials) # new 
 
     # Labels
     if data_args.labels_file != None:
@@ -343,10 +328,14 @@ def main():
         num_labels = 2
         label_list = [False, True]
 
-    # grouped indices/labels for measuring actual accuracy of ranking models
+    # grouped indices/labels for measuring actual accuracy of ranking models 
     if data_args.grouped_indices_file != None:
-        grouped_indices = np.load(data_args.grouped_indices_file)
-        grouped_labels = np.load(data_args.grouped_labels_file)
+        orig_grouped_indices = np.load(data_args.grouped_indices_file)
+        orig_grouped_labels = np.load(data_args.grouped_labels_file)
+        print("Making new grouped indices and labels")
+        grouped_indices, grouped_labels = create_grouped_indices(orig_grouped_indices, \
+                                            orig_grouped_labels, 
+                                            n=data_args.num_partials)
     else:
         grouped_indices = None
         grouped_labels = None
@@ -356,26 +345,25 @@ def main():
     print("label_list:", label_list)
     print("pass_idx:", pass_idx)
 
+
     if data_args.weights_file != None:
         # read weights from file
         with open(data_args.weights_file, 'r') as f:
             class_weights = [float(line.strip()) for line in f]
     else:
-        class_weights = None
-
+        class_weights = None 
+    
     # Load pretrained model and tokenizer
-    tokenizer = RobertaTokenizer.from_pretrained(
-        model_args.model_name_or_path, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer,)
-    model = RobertaForSequenceClassification.from_pretrained(
-        model_args.model_name_or_path, num_labels=num_labels, cache_dir=model_args.cache_dir)
+    tokenizer = RobertaTokenizer.from_pretrained(model_args.model_name_or_path, cache_dir=model_args.cache_dir, use_fast=model_args.use_fast_tokenizer,)    
+    model = RobertaForSequenceClassification.from_pretrained(model_args.model_name_or_path, num_labels=num_labels, cache_dir=model_args.cache_dir)
 
     # import pdb
     # pdb.set_trace()
 
     # Preprocessing the raw datasets
-    sentence1_key = data_args.sentence1_key  # "model_prompt"
-    sentence2_key = data_args.sentence2_key  # "model_completion"
-    label_key = data_args.label_key  # "binary_label"
+    sentence1_key = data_args.sentence1_key #"model_prompt"
+    sentence2_key = data_args.sentence2_key #"model_completion"
+    label_key = data_args.label_key #"binary_label"
 
     # Padding strategy
     if data_args.pad_to_max_length:
@@ -383,7 +371,7 @@ def main():
     else:
         padding = False
 
-    label_to_id = {v: i for i, v in enumerate(label_list)}
+    label_to_id = {v: i for i, v in enumerate(label_list)} 
     model.config.label2id = label_to_id
 
     if data_args.max_seq_length > tokenizer.model_max_length:
@@ -396,14 +384,11 @@ def main():
     pad_token = 0
     pad_token_segment_id = 0
     pad_on_left = False
-
     def preprocess_function(examples):
 
         # Tokenize the texts
-        text1 = [reindent_code(s, replace_set=[])
-                 for s in examples[sentence1_key]]
-        text2 = [reindent_code(s, replace_set=[])
-                 for s in examples[sentence2_key]]
+        text1 = [reindent_code(s, replace_set=[]) for s in examples[sentence1_key]]
+        text2 = [reindent_code(s, replace_set=[]) for s in examples[sentence2_key]]
 
         def trunc(tokens_a, tokens_b, max_length, truncate_texta_from_first=False):
             """Truncates a sequence pair in place to the maximum length."""
@@ -422,7 +407,6 @@ def main():
                         tokens_a.pop()
                 else:
                     tokens_b.pop()
-
         def custom_tokenize(text1, text2):
             all_input_ids = []
             all_attention_mask = []
@@ -430,12 +414,10 @@ def main():
             for i in range(len(text1)):
                 tok_seq1 = tokenizer.tokenize(text1[i])
                 tok_seq2 = tokenizer.tokenize(text2[i])
+                
+                trunc(tok_seq1, tok_seq2, max_seq_length - 3, truncate_texta_from_first=data_args.truncate_texta_from_first) # 3 is number of special tokens for bert sequence pair
 
-                # 3 is number of special tokens for bert sequence pair
-                trunc(tok_seq1, tok_seq2, max_seq_length - 3,
-                      truncate_texta_from_first=data_args.truncate_texta_from_first)
-
-                input_ids = [tokenizer.cls_token_id]
+                input_ids = [tokenizer.cls_token_id] 
                 input_ids += tokenizer.convert_tokens_to_ids(tok_seq1)
                 input_ids += [tokenizer.sep_token_id]
 
@@ -443,93 +425,84 @@ def main():
 
                 input_ids += tokenizer.convert_tokens_to_ids(tok_seq2)
                 input_ids += [tokenizer.sep_token_id]
-                token_type_ids += [1]*(len(tok_seq2)+1)
+                token_type_ids += [1]*(len(tok_seq2)+1) 
 
                 # The mask has 1 for real tokens and 0 for padding tokens. Only real
                 # tokens are attended to.
-                attention_mask = [
-                    1 if mask_padding_with_zero else 0] * len(input_ids)
+                attention_mask = [1 if mask_padding_with_zero else 0] * len(input_ids)
 
                 # Zero-pad up to the sequence length.
                 padding_length = max_seq_length - len(input_ids)
                 if pad_on_left:
-                    input_ids = ([tokenizer.pad_token] *
-                                 padding_length) + input_ids
-                    attention_mask = (
-                        [0 if mask_padding_with_zero else 1] * padding_length) + attention_mask
-                    token_type_ids = ([pad_token_segment_id]
-                                      * padding_length) + token_type_ids
+                    input_ids = ([tokenizer.pad_token] * padding_length) + input_ids
+                    attention_mask = ([0 if mask_padding_with_zero else 1] * padding_length) + attention_mask
+                    token_type_ids = ([pad_token_segment_id] * padding_length) + token_type_ids
                 else:
                     input_ids = input_ids + ([pad_token] * padding_length)
-                    attention_mask = attention_mask + \
-                        ([0 if mask_padding_with_zero else 1] * padding_length)
-                    token_type_ids = token_type_ids + \
-                        ([pad_token_segment_id] * padding_length)
+                    attention_mask = attention_mask + ([0 if mask_padding_with_zero else 1] * padding_length)
+                    token_type_ids = token_type_ids + ([pad_token_segment_id] * padding_length)
 
                 all_input_ids.append(input_ids)
                 all_attention_mask.append(attention_mask)
                 all_token_type_ids.append(token_type_ids)
 
-            result = {"input_ids": all_input_ids,
-                      "attention_mask": all_attention_mask}
+            result = {"input_ids": all_input_ids, "attention_mask": all_attention_mask}
             return result
 
         result = custom_tokenize(text1, text2)
-
+        
         # Map labels to IDs (not necessary for GLUE wc -s)
         if label_to_id is not None and label_key in examples:
             result["label"] = [(label_to_id[l]) for l in examples[label_key]]
         return result
+        
 
     if training_args.do_train:
         if "train" not in raw_datasets:
             raise ValueError("--do_train requires a train dataset")
         train_dataset = raw_datasets["train"]
         if data_args.max_train_samples is not None:
-            train_dataset = train_dataset.select(
-                range(data_args.max_train_samples))
+            train_dataset = train_dataset.select(range(data_args.max_train_samples))
         train_dataset = train_dataset.map(
             preprocess_function,
             batched=True,
             load_from_cache_file=not data_args.overwrite_cache,
             desc="Running tokenizer on train dataset",
-            num_proc=20,
+            num_proc = 20,
         )
     if training_args.do_eval:
-        if "validation" not in raw_datasets:
+        if "validation" not in raw_datasets :
             raise ValueError("--do_eval requires a validation dataset")
         eval_dataset = raw_datasets["validation"]
         if data_args.max_eval_samples is not None:
-            eval_dataset = eval_dataset.select(
-                range(data_args.max_eval_samples))
+            eval_dataset = eval_dataset.select(range(data_args.max_eval_samples))
         eval_dataset = eval_dataset.map(
             preprocess_function,
             batched=True,
             load_from_cache_file=not data_args.overwrite_cache,
             desc="Running tokenizer on eval dataset",
-            num_proc=20,
+            num_proc = 20,
         )
+            
 
     if training_args.do_predict or data_args.test_file is not None:
         if "test" not in raw_datasets:
             raise ValueError("--do_predict requires a test dataset")
         predict_dataset = raw_datasets["test"]
         if data_args.max_predict_samples is not None:
-            predict_dataset = predict_dataset.select(
-                range(data_args.max_predict_samples))
+            predict_dataset = predict_dataset.select(range(data_args.max_predict_samples))
         predict_dataset = predict_dataset.map(
             preprocess_function,
             batched=True,
             load_from_cache_file=not data_args.overwrite_cache,
             desc="Running tokenizer on dataset",
-            num_proc=20,
+            num_proc = 20,
         )
 
     # Log a few random samples from the training set:
     if training_args.do_train:
         for index in random.sample(range(len(train_dataset)), 3):
-            logger.info(
-                f"Sample {index} of the training set: {train_dataset[index]}.")
+            logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
             input_ids = train_dataset[index]["input_ids"]
             text = tokenizer.decode(input_ids)
             print(text)
@@ -538,8 +511,7 @@ def main():
     if data_args.pad_to_max_length:
         data_collator = default_data_collator
     elif training_args.fp16:
-        data_collator = DataCollatorWithPadding(
-            tokenizer, pad_to_multiple_of=8)
+        data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
     else:
         data_collator = None
 
@@ -550,8 +522,7 @@ def main():
             args=training_args,
             train_dataset=train_dataset if training_args.do_train else None,
             eval_dataset=eval_dataset if training_args.do_eval else None,
-            compute_metrics=lambda x: compute_metrics(
-                x, True, grouped_indices, grouped_labels, pass_idx),
+            compute_metrics=lambda x: compute_metrics(x, True, grouped_indices, grouped_labels, pass_idx),
             tokenizer=tokenizer,
             data_collator=data_collator,
         )
@@ -561,8 +532,7 @@ def main():
             args=training_args,
             train_dataset=train_dataset if training_args.do_train else None,
             eval_dataset=eval_dataset if training_args.do_eval else None,
-            compute_metrics=lambda x: compute_metrics(
-                x, True, grouped_indices, grouped_labels, pass_idx),
+            compute_metrics=lambda x: compute_metrics(x, True, grouped_indices, grouped_labels, pass_idx),
             tokenizer=tokenizer,
             data_collator=data_collator,
         )
@@ -585,11 +555,10 @@ def main():
                     "the `--output_dir` or add `--overwrite_output_dir` to train from scratch."
                 )
 
-        train_result = trainer.train(resume_from_checkpoint=last_checkpoint)
+        train_result = trainer.train(resume_from_checkpoint = last_checkpoint)
         metrics = train_result.metrics
         max_train_samples = (
-            data_args.max_train_samples if data_args.max_train_samples is not None else len(
-                train_dataset)
+            data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset)
         )
         metrics["train_samples"] = min(max_train_samples, len(train_dataset))
 
@@ -602,12 +571,10 @@ def main():
     # load model for eval and test
     # if output dir has a model, then load it
     if os.path.exists(os.path.join(training_args.output_dir, "pytorch_model.bin")):
-        logger.info(
-            f"Loading model from {os.path.join(training_args.output_dir, 'pytorch_model.bin')}")
-        model = RobertaForSequenceClassification.from_pretrained(
-            training_args.output_dir, num_labels=num_labels)
+        logger.info(f"Loading model from {os.path.join(training_args.output_dir, 'pytorch_model.bin')}")
+        model = RobertaForSequenceClassification.from_pretrained(training_args.output_dir, num_labels=num_labels)
     else:
-        # if last checkpoint exists and the output dir does not have a model,
+        # if last checkpoint exists and the output dir does not have a model, 
         # then we can load the best model using the trainer state in last checkpoint
         # Detecting last checkpoint.
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
@@ -618,13 +585,10 @@ def main():
                     best_checkpoint = trainer_state['best_model_checkpoint']
                     # match prefix before /checkpoint of the checkpoint name with the output_dir
                     prefix = best_checkpoint.split("/checkpoint")[0]
-                    substitute_prefix = training_args.output_dir.split(
-                        "/checkpoint")[0]
-                    best_checkpoint = best_checkpoint.replace(
-                        prefix, substitute_prefix)
+                    substitute_prefix = training_args.output_dir.split("/checkpoint")[0]
+                    best_checkpoint = best_checkpoint.replace(prefix, substitute_prefix) 
                     logger.info(f"Loading model from {best_checkpoint}")
-                    model = RobertaForSequenceClassification.from_pretrained(
-                        best_checkpoint, num_labels=num_labels)
+                    model = RobertaForSequenceClassification.from_pretrained(best_checkpoint, num_labels=num_labels)
         else:
             logger.info("No model found. Using CodeBERT model")
 
@@ -633,8 +597,7 @@ def main():
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
         eval_dataset=eval_dataset if training_args.do_eval else None,
-        compute_metrics=lambda x: compute_metrics(
-            x, False, grouped_indices, grouped_labels, pass_idx),
+        compute_metrics= lambda x: compute_metrics(x, False, grouped_indices, grouped_labels, pass_idx),
         tokenizer=tokenizer,
         data_collator=data_collator,
     )
@@ -644,8 +607,7 @@ def main():
         metrics = trainer.evaluate(eval_dataset=eval_dataset)
 
         max_eval_samples = (
-            data_args.max_eval_samples if data_args.max_eval_samples is not None else len(
-                eval_dataset)
+            data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
         )
         metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
 
@@ -654,15 +616,13 @@ def main():
 
     if training_args.do_predict:
         logger.info("*** Predict ***")
-        pred_output = trainer.predict(
-            predict_dataset, metric_key_prefix="predict")
+        pred_output = trainer.predict(predict_dataset, metric_key_prefix="predict")
         predictions = pred_output.predictions
         metrics = pred_output.metrics
         trainer.log_metrics("predict", metrics)
         trainer.save_metrics(data_args.predict_suffix, metrics)
 
-        output_predict_file = os.path.join(
-            training_args.output_dir, data_args.predict_suffix)
+        output_predict_file = os.path.join(training_args.output_dir, data_args.predict_suffix)
         if trainer.is_world_process_zero():
             with open(output_predict_file, "w") as writer:
                 logger.info(f"***** Predict results *****")
@@ -670,7 +630,6 @@ def main():
                 for index, item in enumerate(predictions):
                     item_str = "[" + ",".join([str(r) for r in item]) + "]"
                     writer.write(f"{index}\t{item_str}\n")
-
-
+   
 if __name__ == "__main__":
     main()
