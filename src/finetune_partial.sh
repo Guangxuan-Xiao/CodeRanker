@@ -45,12 +45,12 @@ if [ $TASK != "execution_error_with_line" ]; then
         --max_seq_length 512 \
         --do_train \
         --do_eval \
-        --per_device_train_batch_size 16 \
-        --per_device_eval_batch_size 32 \
-        --learning_rate 1e-4 \
+        --per_device_train_batch_size 64 \
+        --per_device_eval_batch_size 64 \
+        --learning_rate 2e-5 \
         --warmup_steps 1000 \
         --weight_decay 0.01 \
-        --gradient_accumulation_steps 32 \
+        --gradient_accumulation_steps 1 \
         --num_train_epochs 30 \
         --evaluation_strategy steps \
         --save_strategy steps \
@@ -58,8 +58,9 @@ if [ $TASK != "execution_error_with_line" ]; then
         --load_best_model_at_end \
         --metric_for_best_model top1_accuracy \
         --logging_first_step \
-        --eval_steps 10 \
-        --save_steps 10
+        --eval_steps 1000 \
+        --save_steps 1000 \
+        --save_total_limit 1
 
 else
     LABELS_SUFFIX=labels_execution_error.txt
@@ -82,12 +83,12 @@ else
         --max_seq_length 512 \
         --do_train \
         --do_eval \
-        --per_device_train_batch_size 16 \
-        --per_device_eval_batch_size 32 \
-        --learning_rate 1e-4 \
+        --per_device_train_batch_size 64 \
+        --per_device_eval_batch_size 64 \
+        --learning_rate 2e-5 \
         --warmup_steps 1000 \
         --weight_decay 0.01 \
-        --gradient_accumulation_steps 32 \
+        --gradient_accumulation_steps 1 \
         --num_train_epochs 30 \
         --evaluation_strategy steps \
         --save_strategy steps \
@@ -95,8 +96,9 @@ else
         --load_best_model_at_end \
         --metric_for_best_model top1_accuracy \
         --logging_first_step \
-        --eval_steps 10 \
-        --save_steps 10 \
+        --eval_steps 1000 \
+        --save_steps 1000 \
+        --save_total_limit 1 \
         --overwrite_output_dir \
 
 fi

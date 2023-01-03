@@ -165,10 +165,10 @@ class ModelArguments:
 
 
 def compute_metrics(p: EvalPrediction, compute_ranker_accuracy=False, grouped_indices=None, grouped_labels=None, pass_idx=1):
-    # grouped_indices is a two-dimensional array where each row represents the indices 
-    # of various datapoints in p that have the same prompt 
-    
-    # grouped_labels is the actual ternary labels of <prompt, completion> 
+    # grouped_indices is a two-dimensional array where each row represents the indices
+    # of various datapoints in p that have the same prompt
+
+    # grouped_labels is the actual ternary labels of <prompt, completion>
     # datapoints at the indices provided by grouped_indices
 
     pred_raw, labels = p

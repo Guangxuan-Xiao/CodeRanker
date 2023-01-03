@@ -1,6 +1,6 @@
-cache/
+cache*/
 dataset/*
-models/
+models*/
 src/wandb
 
 
